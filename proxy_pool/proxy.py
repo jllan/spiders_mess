@@ -4,11 +4,9 @@ import time
 import requests
 from lxml import etree
 from pymongo import MongoClient
-from threading import Thread
 from multiprocessing.dummy import Pool
 
 
-# api = ''
 client = MongoClient('localhost', 27017)
 db = client['data']
 proxy_pool = db['proxies']
@@ -53,7 +51,7 @@ class ProxyPool():
                     protocol = ip.xpath('td[6]/text()')[0].lower()
                     proxy = '{}://{}:{}'.format(protocol, ipaddr, port)
                     print(proxy)
-                    self.update_proxy(proxy)
+                    self.update_proxy({'proxy': proxy, 'error_count': 0})
 
     def download_proxy(self):
         """
@@ -67,25 +65,25 @@ class ProxyPool():
     def update_proxy(self, proxy, error_count=0):
         """
         测试后更新代理，主要更新代理的出错次数
-        :param proxy: 被要更新的代理
+        :param proxy: 要被更新的代理,格式为{'proxy': proxy, 'error_count': 0}
         :param error_count: 代理出错次数
         :return:
         """
-        proxy_pool.find_one_and_update(
-            {'proxy': proxy},
-            {'$set':
-                 {'proxy': proxy,'error_count': error_count}
-             },
-            upsert=True
-        )
-        return proxy
+        if self._test_proxy(proxy):
+            proxy_pool.find_one_and_update(
+                {'proxy': proxy['proxy']},
+                {'$set': proxy
+                 },
+                upsert=True
+            )
+            return proxy
 
     def _del_proxy(self, proxy):
         proxy_pool.find_one_and_delete(
             {'proxy': proxy}
         )
 
-    def test_proxy(self, proxy):
+    def _test_proxy(self, proxy):
         test_url = 'http://httpbin.org/ip' # 使用代理请求该地址进行测试
         protocol = proxy['proxy'].split('://')[0]
         proxies = {protocol: proxy['proxy']}
@@ -98,17 +96,17 @@ class ProxyPool():
         except Exception as e:
             print(proxy['proxy'], e)
             proxy['error_count'] += 1
-            if proxy['error_count'] > 3:
+            if proxy['error_count'] > 2:
                 self._del_proxy(proxy)
                 return False
         else:
             print(proxy['proxy'], '有效')
             proxy['error_count'] = 0 if proxy['error_count'] == 0 else (proxy['error_count']-1)
-        self.update_proxy(**proxy)
+        # self.update_proxy(**proxy)
         return proxy
 
     def run(self):
-        print('开始ProxyPool.............................................')
+        print('启动代理池服务......................................................................')
         while True:
             # 当代理池中有效代理代理数量<10的时候开始抓取新的代理
             proxies1 = proxy_pool.find({'error_count': {"$lt": 1}}, {'_id': 0})
@@ -121,7 +119,7 @@ class ProxyPool():
 
             # 多线程测试代理的可用性，只测试出错次数<3的代理，其余的代理认为已经失效
             pool = Pool(4)
-            pool.map(self.test_proxy, proxies3)
+            pool.map(self.update_proxy, proxies3)
             pool.close()
             pool.join()
 
